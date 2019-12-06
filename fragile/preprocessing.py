@@ -5,10 +5,15 @@ import fire
 import joblib
 from joblib import Parallel, delayed
 import pandas as pd
+import numpy as np
 from pandas.io.json._json import JsonReader
 from tqdm import tqdm
+from transformers import BertTokenizer
 
-from.data_structures import Candidate
+from .data_structures import RawCandidate, TokenizedCandidate
+
+DEBUG = 0
+TOKENIZER = BertTokenizer.from_pretrained("bert-base-cased")
 
 
 class JsonChunkReader(JsonReader):
@@ -66,32 +71,79 @@ def parse_annotations(row, candidates):
         for sans in entry["short_answers"]:
             start = sans['start_token'] - long_answer['start_token']
             end = sans['end_token'] - long_answer['start_token']
-            short_answers.append(
-                (start, end, " ".join(reference.tokens[start:end])))
+            short_answers.append((start, end))
+            if DEBUG:
+                print(
+                    " ".join(reference.tokens[start:end]) + f" {start} {end}")
         reference.answer_type = ANSWER_TYPES[entry["yes_no_answer"]]
         reference.short_answers = short_answers
         success = True
     return success
 
 
-def parse_long_candidates(row, has_annotations=False):
+def tokenize_candidate(candidate):
+    orig_to_tok = []
+    tok_to_orig = []
+    token_ids = []
+    previous_spaces = 0
+    for token in candidate.tokens:
+        sub_tokens = TOKENIZER.encode(token)
+        orig_to_tok.append(len(token_ids))
+        if not sub_tokens:
+            previous_spaces += 1
+            continue
+        # assert sub_tokens, f"{ord(token[0])}, {len(token)}, {token}"
+        tok_to_orig.extend(
+            [len(orig_to_tok) - previous_spaces - 1] * len(sub_tokens))
+        token_ids.extend(sub_tokens)
+        previous_spaces = 0
+    short_answers = []
+    for start, end in candidate.short_answers:
+        # point to the first non-white token
+        while start > 1 and orig_to_tok[start] == orig_to_tok[start-1]:
+            start = start - 1
+        while end > 1 and orig_to_tok[end] == orig_to_tok[end-1]:
+            end = end - 1
+        short_answers.append((orig_to_tok[start], orig_to_tok[end]))
+        if DEBUG:
+            print(
+                start, end, orig_to_tok[start], orig_to_tok[end],
+                tok_to_orig[orig_to_tok[start]], tok_to_orig[orig_to_tok[end]])
+        assert tok_to_orig[orig_to_tok[start]] == start
+        assert tok_to_orig[orig_to_tok[end]
+                           ] == end, f"{start}, {end}, {tok_to_orig[orig_to_tok[start]]}, {tok_to_orig[orig_to_tok[end]]}"
+    return TokenizedCandidate(
+        original_index=candidate.original_index,
+        filtered_index=candidate.filtered_index,
+        token_ids=token_ids,
+        start_token=candidate.start_token,
+        end_token=candidate.end_token,
+        tok_to_orig=tok_to_orig,
+        answer_type=candidate.answer_type,
+        short_answers=short_answers
+    )
+
+
+def parse_long_candidates(row, has_annotations):
     text = row["document_text"]
     tokens = text.split(" ")
-    results = {}
+    candidates = {}
     for i, entry in enumerate(row["long_answer_candidates"]):
         if not entry["top_level"]:
             continue
-        results[i] = Candidate(
+        candidates[i] = RawCandidate(
             i,
-            len(results),
+            len(candidates),
             tokens[entry["start_token"]:entry["end_token"]],
-            entry["start_token"]
+            entry["start_token"],
+            entry["end_token"]
         )
+        assert ">" == candidates[i].tokens[-1][-1]
     if has_annotations:
-        success = parse_annotations(row, results)
+        success = parse_annotations(row, candidates)
         if not success:
             return None
-    return results
+    return [tokenize_candidate(x) for x in candidates.values()]
 
 
 ANSWER_TYPES = {
@@ -105,46 +157,73 @@ def preprocess(
     filepath: str = 'data/simplified-nq-train.jsonl',
     output_pattern: str = 'cache/train_%d.jl',
     has_annotations: bool = False,
-    read_chunk_size=2000,
-    write_per_chunk=5
+    chunk_size=500,
+    write_per_chunk=10,
+    skip_writes=0,
+    stop_at=-1
 ):
     reader = JsonChunkReader.chunk_reader(
-        filepath, chunksize=read_chunk_size
+        filepath, chunksize=chunk_size,
     )
-    buffer, n_written = [], 0
-    na_count = 0
-    with Parallel(n_jobs=4) as parallel:
-        for df in tqdm(reader):
+    buffer, n_written = [], skip_writes
+    na_count = 1
+    with Parallel(n_jobs=2, prefer="threads") as parallel:
+        for i, df in tqdm(enumerate(reader)):
+            if i < skip_writes * write_per_chunk:
+                continue
             df.drop(["document_url"], axis=1, inplace=True)
-            df["candidates"] = parallel(
-                delayed(parse_long_candidates)(
-                    row, has_annotations=has_annotations)
+            # candidates = np.asarray(parallel(
+            #     delayed(parse_long_candidates)(
+            #         row, has_annotations=has_annotations
+            #     )
+            #     for _, row in df.iterrows()
+            # ))
+            candidates = [
+                parse_long_candidates(row, has_annotations=has_annotations)
+                for _, row in df.iterrows()
+            ]
+            question_tokens = parallel(
+                delayed(TOKENIZER.encode)(
+                    row["question_text"]
+                )
                 for _, row in df.iterrows()
             )
-            df.drop(
-                ["document_text", "long_answer_candidates"],
-                axis=1, inplace=True)
-            if has_annotations:
-                df.drop(["annotations"], axis=1, inplace=True)
-            na_count += df.candidates.isnull().sum()
-            df = df[~df.candidates.isnull()].copy()
-            buffer.append(df)
+            # question_tokens = [
+            #     TOKENIZER.encode(row["question_text"])
+            #     for _, row in df.iterrows()]
+            ids = df.example_id.values
+            # print(ids.dtype)
+            # df.drop(
+            #     ["document_text", "long_answer_candidates", "question_text"],
+            #     axis=1, inplace=True)
+            # if has_annotations:
+            #     df.drop(["annotations"], axis=1, inplace=True)
+            na_count += np.sum([x is None for x in candidates])
+            # not_none = ~np.equal(candidates, None)
+            # buffer.append(np.stack([
+            #     ids[not_none], question_tokens[not_none], candidates[not_none]
+            # ], axis=1))
+            for eid, qtokens, cands in zip(ids, question_tokens, candidates):
+                if cands is None:
+                    continue
+                buffer.append((eid, qtokens, cands))
+            # print(df.columns)
+            # raise ValueError()
             # for i, row in df.iterrows():
             #     print(i, [
             #         (x.short_answers, x.answer_type)
             #         for x in row["candidates"].values() if x.answer_type > 0])
-            if len(buffer) == write_per_chunk:
+            if (i + 1) % write_per_chunk == 0:
                 print(
-                    f"Writing... NA ratio: {na_count/read_chunk_size/write_per_chunk}")
-                df_final = pd.concat(buffer)
-                joblib.dump(df_final, output_pattern % n_written)
+                    f"Writing... NA ratio: {na_count/chunk_size/write_per_chunk}")
+                joblib.dump(buffer, output_pattern % n_written)
                 n_written += 1
                 buffer = []
                 na_count = 0
-                del df_final
+            if stop_at > 0 and i + 1 == stop_at * write_per_chunk:
+                break
     if buffer:
-        df_final = pd.concat(buffer)
-        joblib.dump(df_final, output_pattern % n_written)
+        joblib.dump(np.concatenate(buffer), output_pattern % n_written)
 
 
 if __name__ == '__main__':
