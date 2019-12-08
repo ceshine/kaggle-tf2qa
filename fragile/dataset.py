@@ -11,7 +11,7 @@ from .data_structures import TokenizedCandidate, Example
 class QADataset(IterableDataset):
     def __init__(
             self, file_paths, tokenizer,
-            seed=939, epochs=-1,
+            seed=939, is_test: bool = False,
             max_question_length=128,
             max_example_length=400,
             debug=False
@@ -23,7 +23,7 @@ class QADataset(IterableDataset):
         self.debug = debug
         self.max_question_length = max_question_length
         self.max_example_length = max_example_length
-        self.epochs = epochs
+        self.is_test = is_test
         self.cls_token_id = self.tokenizer.convert_tokens_to_ids(
             [self.tokenizer.cls_token])[0]
         self.sep_token_id = self.tokenizer.convert_tokens_to_ids(
@@ -37,10 +37,10 @@ class QADataset(IterableDataset):
             seed = self.seed
         else:  # in a worker process
                # split workload
-            if worker_info.num_workers > 1 and self.epochs == 1:
+            if worker_info.num_workers > 1 and self.is_test:
                 raise ValueError("Validation cannot have num_workers > 1!")
             seed = self.seed + worker_info.id * 10
-        if self.epochs > 1:
+        if self.is_test is False:
             # traininig mode
             np.random.seed(seed)
             np.random.shuffle(self.file_paths)
@@ -50,17 +50,19 @@ class QADataset(IterableDataset):
         while True:
             for chunk_path in self.file_paths:
                 chunk = joblib.load(chunk_path)
+                np.random.shuffle(chunk)
                 for eid, qtokens, candidates in chunk:
                     for example in self.prepare_one_example(
                             eid, qtokens, candidates):
                         yield example
-            if self.epochs == 1:
+            if self.is_test is True:
                 break
             np.random.shuffle(self.file_paths)
 
     def prepare_one_example(self, eid: int, qtokens: Sequence[int], candidates: Sequence[TokenizedCandidate]):
         # truncate qtokens
         qtokens = list(qtokens[:self.max_question_length])
+        np.random.shuffle(candidates)
         for cand in candidates:
             index_tokens = self.tokenizer.encode(str(cand.filtered_index))
             # 1 [CLS], 2 [SEP]'s
@@ -77,15 +79,15 @@ class QADataset(IterableDataset):
             )
             input_ids = torch.zeros(
                 self.max_example_length, dtype=torch.long) + self.pad_token_id
-            input_ids[:(overall_tokens).size(0)] = overall_tokens
+            input_ids[:overall_tokens.size(0)] = overall_tokens
             input_mask = torch.zeros(self.max_example_length, dtype=torch.long)
-            input_mask[:(overall_tokens).size(0)] = 1
+            input_mask[:overall_tokens.size(0)] = 1
             token_type_ids = torch.zeros(
                 self.max_example_length, dtype=torch.long)
             token_type_ids[cand_offset - len(index_tokens):] = 1
             # 1 indicates not part of the short answer:
-            sa_mask = torch.ones(self.max_example_length, dtype=torch.long)
-            sa_mask[cand_offset:(overall_tokens).size(0)-1] = 0
+            sa_mask = torch.ones(self.max_example_length, dtype=torch.bool)
+            sa_mask[cand_offset:(overall_tokens).size(0)-1] = False
             sa_mask[0] = 0  # point to [CLS] when no answer exists
             assert (
                 (overall_tokens).size(0) - 1 - cand_offset
@@ -105,10 +107,10 @@ class QADataset(IterableDataset):
                 sa_mask=sa_mask,
                 answer_type=cand.answer_type,
                 short_answer_start=(
-                    short_answer[0] + cand_offset if short_answer else -1
+                    short_answer[0] + cand_offset if short_answer else 0
                 ),
                 short_answer_end=(
-                    short_answer[1] + cand_offset if short_answer else -1
+                    short_answer[1] + cand_offset if short_answer else 0
                 ),
                 example_id=eid,
                 tok_to_orig=cand.tok_to_orig,
@@ -133,12 +135,12 @@ def collate_example_for_training(
             x.answer_type for x in batch
         ], dtype=torch.long),
         torch.tensor([
-            x.sa_starts for x in batch
+            x.short_answer_start for x in batch
         ], dtype=torch.long),
         torch.tensor([
-            x.sa_ends for x in batch
+            x.short_answer_end for x in batch
         ], dtype=torch.long)
-    ], dim=0)
+    ], dim=1)
     return (
         {
             "input_ids": torch.stack([
@@ -148,7 +150,7 @@ def collate_example_for_training(
                 x.input_mask for x in batch
             ], dim=0),
             "token_type_ids": torch.stack([
-                x.input_mask for x in batch
+                x.token_type_ids for x in batch
             ], dim=0),
             "sa_mask": torch.stack([
                 x.sa_mask for x in batch
@@ -160,7 +162,7 @@ def collate_example_for_training(
 
 def collate_example_for_inference(
     batch: Sequence[Example]
-) -> Tuple[Dict[str, torch.Tensor], Sequence, Sequence, Sequence]:
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, Sequence]]:
     return (
         {
             "input_ids": torch.stack([
@@ -170,14 +172,17 @@ def collate_example_for_inference(
                 x.input_mask for x in batch
             ], dim=0),
             "token_type_ids": torch.stack([
-                x.input_mask for x in batch
+                x.token_type_ids for x in batch
             ], dim=0),
             "sa_mask": torch.stack([
                 x.sa_mask for x in batch
             ], dim=0)
         },
-        [x.example_id for x in batch],
-        [x.tok_to_orig for x in batch],
-        [x.starts_at for x in batch],
-        [x.ends_at for x in batch]
+        {
+            "example_id": [x.example_id for x in batch],
+            "tok_to_orig": [x.tok_to_orig for x in batch],
+            "starts_at": [x.starts_at for x in batch],
+            "ends_at": [x.ends_at for x in batch],
+            "offset": [x.offset for x in batch],
+        }
     )
