@@ -1,5 +1,6 @@
 import json
 import itertools
+from pathlib import Path
 
 import fire
 import joblib
@@ -155,13 +156,14 @@ ANSWER_TYPES = {
 
 def preprocess(
     filepath: str = 'data/simplified-nq-train.jsonl',
-    output_pattern: str = 'cache/train_%d.jl',
+    output_pattern: str = 'cache/train/train_%d.jl',
     has_annotations: bool = False,
     chunk_size=500,
-    write_per_chunk=10,
+    write_per_chunk=2,
     skip_writes=0,
     stop_at=-1
 ):
+    Path(output_pattern).parent.mkdir(exist_ok=True, parents=True)
     reader = JsonChunkReader.chunk_reader(
         filepath, chunksize=chunk_size,
     )

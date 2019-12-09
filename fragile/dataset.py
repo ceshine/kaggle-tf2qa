@@ -1,3 +1,4 @@
+import random
 from typing import Sequence, Dict, Tuple
 
 import joblib
@@ -14,6 +15,7 @@ class QADataset(IterableDataset):
             seed=939, is_test: bool = False,
             max_question_length=128,
             max_example_length=400,
+            sample_negatives=1.,
             debug=False
     ):
         super().__init__()
@@ -24,6 +26,7 @@ class QADataset(IterableDataset):
         self.max_question_length = max_question_length
         self.max_example_length = max_example_length
         self.is_test = is_test
+        self.sample_negatives = sample_negatives
         self.cls_token_id = self.tokenizer.convert_tokens_to_ids(
             [self.tokenizer.cls_token])[0]
         self.sep_token_id = self.tokenizer.convert_tokens_to_ids(
@@ -48,13 +51,20 @@ class QADataset(IterableDataset):
 
     def generator(self, seed):
         while True:
+            cnt = 0
             for chunk_path in self.file_paths:
                 chunk = joblib.load(chunk_path)
-                np.random.shuffle(chunk)
+                if self.is_test is False:
+                    # shuffle only in training
+                    np.random.shuffle(chunk)
                 for eid, qtokens, candidates in chunk:
                     for example in self.prepare_one_example(
                             eid, qtokens, candidates):
                         yield example
+                    cnt += 1
+                    if self.is_test is True and cnt == 300:
+                        # to make validation faster
+                        break
             if self.is_test is True:
                 break
             np.random.shuffle(self.file_paths)
@@ -64,6 +74,9 @@ class QADataset(IterableDataset):
         qtokens = list(qtokens[:self.max_question_length])
         np.random.shuffle(candidates)
         for cand in candidates:
+            if cand.answer_type == 0 and self.sample_negatives < 1 and self.sample_negatives > 0:
+                if random.random() > self.sample_negatives:
+                    continue
             index_tokens = self.tokenizer.encode(str(cand.filtered_index))
             # 1 [CLS], 2 [SEP]'s
             max_cand_len = (

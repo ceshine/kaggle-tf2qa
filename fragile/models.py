@@ -18,20 +18,32 @@ class BasicBert(nn.Module):
         config.output_hidden_states = False
         self.bert = BertModel.from_pretrained(
             model_name_or_path, config=config)
-        self.answer_type_classifier = nn.Linear(
-            self.get_hidden_dimension(), 4)
-        self.short_answer_classifier = nn.Linear(
-            self.get_hidden_dimension(), 2)
+        self.answer_type_classifier = nn.Sequential(
+            nn.Linear(
+                self.get_hidden_dimension(),
+                self.get_hidden_dimension()),
+            nn.ReLU(),
+            nn.LayerNorm(self.get_hidden_dimension()),
+            nn.Linear(self.get_hidden_dimension(), 4)
+        )
+        self.short_answer_classifier = nn.Sequential(
+            nn.Linear(
+                self.get_hidden_dimension(),
+                self.get_hidden_dimension()),
+            nn.ReLU(),
+            nn.LayerNorm(self.get_hidden_dimension()),
+            nn.Linear(self.get_hidden_dimension(), 2)
+        )
 
     def forward(self, features) -> Dict:
         """Returns token_embeddings, cls_token"""
-        last_hidden_states, pooler_output = self.bert(
+        last_hidden_states, _ = self.bert(
             input_ids=features['input_ids'],
             token_type_ids=features.get('token_type_ids', None),
             attention_mask=features['input_mask']
         )
         # shape: (batch, 4)
-        logit_type = self.answer_type_classifier(pooler_output)
+        logit_type = self.answer_type_classifier(last_hidden_states[:, 0, :])
         # shape: (batch, seq_len, 2)
         logit_sa = self.short_answer_classifier(last_hidden_states)
         # make irrelevant positions nearly impossible
