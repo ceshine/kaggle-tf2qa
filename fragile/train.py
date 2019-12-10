@@ -9,7 +9,7 @@ from transformers import BertTokenizer
 from pytorch_helper_bot import (
     MovingAverageStatsTrackerCallback, LearningRateSchedulerCallback,
     MultiStageScheduler, LinearLR, CheckpointCallback,
-    AdamW
+    AdamW, TelegramCallback, StepwiseLinearPropertySchedulerCallback
 )
 
 from .bot import BasicQABot
@@ -65,13 +65,13 @@ def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negat
     valid_ds = QADataset(
         test_paths, tokenizer, seed=42, is_test=True,
         max_question_length=max_q_len, max_example_length=max_ex_len,
-        sample_negatives=sample_negatives,
+        sample_negatives=sample_negatives
     )
     valid_loader: DataLoader = DataLoader(
         valid_ds, collate_fn=collate_example_for_training,
         batch_size=batch_size, num_workers=0
     )
-    return train_loader, valid_loader
+    return train_ds, train_loader, valid_ds, valid_loader
 
 
 def main(
@@ -80,7 +80,7 @@ def main(
     lr: float = 3e-4, grad_accu: int = 1, sample_negatives: float = 1.0
 ):
     tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
-    train_loader, valid_loader = get_data(
+    train_ds, train_loader, _, valid_loader = get_data(
         tokenizer, pattern, max_q_len, max_ex_len,
         batch_size, sample_negatives
     )
@@ -113,7 +113,16 @@ def main(
                 start_at_epochs=break_points
             )
         ),
-        checkpoints
+        checkpoints,
+        TelegramCallback(
+            token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
+            chat_id="213781869", name="QABot",
+            report_evals=True
+        ),
+        StepwiseLinearPropertySchedulerCallback(
+            train_ds, "sample_negatives", 0.01, 0.3,
+            1000, int(n_steps * 0.9), log_freq=1000
+        )
     ]
     bot = BasicQABot(
         model=model,
@@ -123,7 +132,7 @@ def main(
         clip_grad=10.,
         optimizer=optimizer,
         echo=True,
-        criterion=BasicQALoss(5),
+        criterion=BasicQALoss(0.5),
         callbacks=callbacks,
         pbar=True,
         use_tensorboard=False,
@@ -134,7 +143,7 @@ def main(
     bot.logger.info("train batch size: %d", train_loader.batch_size)
     bot.train(
         total_steps=n_steps,
-        checkpoint_interval=1000
+        checkpoint_interval=3000
     )
     bot.load_model(checkpoints.best_performers[0][1])
     checkpoints.remove_checkpoints(keep=0)

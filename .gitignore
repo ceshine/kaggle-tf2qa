@@ -22,3 +22,6 @@ input
 data/
 notebooks/.ipynb_checkpoints/
 docs/
+build/
+dist/
+*.egg-info/

@@ -47,7 +47,9 @@ class BasicBert(nn.Module):
         # shape: (batch, seq_len, 2)
         logit_sa = self.short_answer_classifier(last_hidden_states)
         # make irrelevant positions nearly impossible
-        logit_sa[features['sa_mask'][:, :, None].expand(-1, -1, 2)] = -1e20
+        logit_sa[
+            features['sa_mask'][:, :, None].expand(-1, -1, 2)
+        ] = -1e20
         return {
             "logit_sa": logit_sa,
             "logit_type": logit_type

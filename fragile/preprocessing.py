@@ -14,7 +14,6 @@ from transformers import BertTokenizer
 from .data_structures import RawCandidate, TokenizedCandidate
 
 DEBUG = 0
-TOKENIZER = BertTokenizer.from_pretrained("bert-base-cased")
 
 
 class JsonChunkReader(JsonReader):
@@ -82,13 +81,13 @@ def parse_annotations(row, candidates):
     return success
 
 
-def tokenize_candidate(candidate):
+def tokenize_candidate(candidate, tokenizer):
     orig_to_tok = []
     tok_to_orig = []
     token_ids = []
     previous_spaces = 0
     for token in candidate.tokens:
-        sub_tokens = TOKENIZER.encode(token)
+        sub_tokens = tokenizer.encode(token, add_special_tokens=False)
         orig_to_tok.append(len(token_ids))
         if not sub_tokens:
             previous_spaces += 1
@@ -125,7 +124,7 @@ def tokenize_candidate(candidate):
     )
 
 
-def parse_long_candidates(row, has_annotations):
+def parse_long_candidates(row, has_annotations, tokenizer):
     text = row["document_text"]
     tokens = text.split(" ")
     candidates = {}
@@ -144,7 +143,7 @@ def parse_long_candidates(row, has_annotations):
         success = parse_annotations(row, candidates)
         if not success:
             return None
-    return [tokenize_candidate(x) for x in candidates.values()]
+    return [tokenize_candidate(x, tokenizer) for x in candidates.values()]
 
 
 ANSWER_TYPES = {
@@ -161,8 +160,10 @@ def preprocess(
     chunk_size=500,
     write_per_chunk=2,
     skip_writes=0,
-    stop_at=-1
+    stop_at=-1,
+    tokenizer_model: str = "bert-base-cased"
 ):
+    tokenizer = BertTokenizer.from_pretrained(tokenizer_model)
     Path(output_pattern).parent.mkdir(exist_ok=True, parents=True)
     reader = JsonChunkReader.chunk_reader(
         filepath, chunksize=chunk_size,
@@ -173,7 +174,8 @@ def preprocess(
         for i, df in tqdm(enumerate(reader)):
             if i < skip_writes * write_per_chunk:
                 continue
-            df.drop(["document_url"], axis=1, inplace=True)
+            if has_annotations:
+                df.drop(["document_url"], axis=1, inplace=True)
             # candidates = np.asarray(parallel(
             #     delayed(parse_long_candidates)(
             #         row, has_annotations=has_annotations
@@ -181,17 +183,18 @@ def preprocess(
             #     for _, row in df.iterrows()
             # ))
             candidates = [
-                parse_long_candidates(row, has_annotations=has_annotations)
+                parse_long_candidates(
+                    row, has_annotations=has_annotations, tokenizer=tokenizer)
                 for _, row in df.iterrows()
             ]
             question_tokens = parallel(
-                delayed(TOKENIZER.encode)(
-                    row["question_text"]
+                delayed(tokenizer.encode)(
+                    row["question_text"], add_special_tokens=False
                 )
                 for _, row in df.iterrows()
             )
             # question_tokens = [
-            #     TOKENIZER.encode(row["question_text"])
+            #     TOKENIZER.encode(row["question_text"], add_special_tokens=False)
             #     for _, row in df.iterrows()]
             ids = df.example_id.values
             # print(ids.dtype)
@@ -209,6 +212,7 @@ def preprocess(
                 if cands is None:
                     continue
                 buffer.append((eid, qtokens, cands))
+            print(len(buffer))
             # print(df.columns)
             # raise ValueError()
             # for i, row in df.iterrows():
@@ -225,7 +229,7 @@ def preprocess(
             if stop_at > 0 and i + 1 == stop_at * write_per_chunk:
                 break
     if buffer:
-        joblib.dump(np.concatenate(buffer), output_pattern % n_written)
+        joblib.dump(buffer, output_pattern % n_written)
 
 
 if __name__ == '__main__':

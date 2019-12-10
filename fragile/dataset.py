@@ -53,6 +53,7 @@ class QADataset(IterableDataset):
         while True:
             cnt = 0
             for chunk_path in self.file_paths:
+                print(f"loading {chunk_path}...")
                 chunk = joblib.load(chunk_path)
                 if self.is_test is False:
                     # shuffle only in training
@@ -62,9 +63,9 @@ class QADataset(IterableDataset):
                             eid, qtokens, candidates):
                         yield example
                     cnt += 1
-                    if self.is_test is True and cnt == 300:
-                        # to make validation faster
-                        break
+                    # if self.is_test is True and cnt == 600:
+                    #     # to make validation faster
+                    #     break
             if self.is_test is True:
                 break
             np.random.shuffle(self.file_paths)
@@ -77,7 +78,8 @@ class QADataset(IterableDataset):
             if cand.answer_type == 0 and self.sample_negatives < 1 and self.sample_negatives > 0:
                 if random.random() > self.sample_negatives:
                     continue
-            index_tokens = self.tokenizer.encode(str(cand.filtered_index))
+            index_tokens = self.tokenizer.encode(
+                str(cand.filtered_index), add_special_tokens=False)
             # 1 [CLS], 2 [SEP]'s
             max_cand_len = (
                 self.max_example_length -

@@ -1,7 +1,9 @@
 from typing import Dict, Tuple
 
 import torch
+import torch.nn.functional as F
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 from pytorch_helper_bot.bot import BaseBot, batch_to_device
@@ -16,11 +18,22 @@ class ShortAnswerAccuracy:
             (truth[:, 1] == pred["sa"][:, 0]) * eligible).item()
         correct_end = torch.sum(
             (truth[:, 2] == pred["sa"][:, 1]) * eligible).item()
-        n_eligible = eligible.sum()
+        n_eligible = eligible.sum().item()
+        print(
+            "Average start deviance: %.2f" %
+            ((torch.abs(truth[:, 1] - pred["sa"][:, 0]).float() *
+              eligible * (truth[:, 1] != 0)).sum()
+                / n_eligible).item())
+        print(
+            "Average end deviance: %.2f" %
+            ((torch.abs(truth[:, 2] - pred["sa"][:, 1]).float() *
+              eligible * (truth[:, 1] != 0)).sum()
+                / n_eligible).item())
         return correct_start, correct_end, n_eligible
 
     def __call__(self, truth: torch.Tensor, pred: Dict[str, torch.Tensor]) -> Tuple[float, str]:
         correct_start, correct_end, n_eligible = self.get_stats(truth, pred)
+        # print(correct_start, correct_end, n_eligible)
         if n_eligible == 0:
             return 0, f"0%"
         accuracy = float(correct_start + correct_end) / n_eligible / 2
@@ -37,7 +50,7 @@ class ShortAnswerStrictAccuracy:
             (truth[:, 1] == pred["sa"][:, 0]) *
             eligible
         ).item()
-        n_eligible = eligible.sum()
+        n_eligible = eligible.sum().item()
         return correct, n_eligible
 
     def __call__(self, truth: torch.Tensor, pred: Dict[str, torch.Tensor]) -> Tuple[float, str]:
@@ -48,14 +61,26 @@ class ShortAnswerStrictAccuracy:
         return accuracy * -1, f"{accuracy * 100:.2f}%"
 
 
-class AnswerTypeOneAccuracy:
-    name = "type_1_accuracy"
+class AnswerTypeOneRecall:
+    name = "type_1_recall"
 
     def __call__(self, truth: torch.Tensor, pred: Dict[str, torch.Tensor]) -> Tuple[float, str]:
         correct = torch.sum(
             (pred["type"] == truth[:, 0]) * (truth[:, 0] == 1)
         ).item()
         total = (truth[:, 0] == 1).sum().item()
+        accuracy = float(correct) / total
+        return accuracy * -1, f"{accuracy * 100:.2f}%"
+
+
+class AnswerTypeOnePrecision:
+    name = "type_1_precision"
+
+    def __call__(self, truth: torch.Tensor, pred: Dict[str, torch.Tensor]) -> Tuple[float, str]:
+        correct = torch.sum(
+            (pred["type"] == truth[:, 0]) * (pred["type"] == 1)
+        ).item()
+        total = (pred["type"] == 1).sum().item()
         accuracy = float(correct) / total
         return accuracy * -1, f"{accuracy * 100:.2f}%"
 
@@ -79,7 +104,8 @@ class BasicQABot(BaseBot):
         self.loss_format = "%.6f"
         self.metrics = (
             AnswerTypeAccuracy(), ShortAnswerAccuracy(),
-            ShortAnswerStrictAccuracy(), AnswerTypeOneAccuracy()
+            ShortAnswerStrictAccuracy(), AnswerTypeOneRecall(),
+            AnswerTypeOnePrecision()
         )
 
     def extract_prediction(self, x):
@@ -99,6 +125,10 @@ class BasicQABot(BaseBot):
                     output, y_local.to(self.device))
                 losses.append(batch_loss.data.cpu().item())
                 weights.append(y_local.size(self.batch_dim))
+                # print((output["logit_sa"][0, y_local[0, 1], 0]))
+                # print((output["logit_sa"][0, y_local[0, 2], 1]))
+                assert(output["logit_sa"][0, y_local[0, 1], 0] > -1e19)
+                assert(output["logit_sa"][0, y_local[0, 2], 1] > -1e19)
                 # Save batch labels and predictions
                 # shape (batch, 2)
                 preds_sa.append(
@@ -121,3 +151,44 @@ class BasicQABot(BaseBot):
                 global_ys, {"sa": global_preds_sa, "type": global_preds_type})
             metrics[metric.name] = (metric_loss, metric_string)
         return metrics
+
+    def predict(self, loader):
+        self.model.eval()
+        ids, sas, types, lstarts, lends = [], [], [], [], []
+        with torch.no_grad():
+            for *input_tensors, batch_metas in tqdm(loader, disable=not self.pbar):
+                input_tensors = batch_to_device(input_tensors, self.device)
+                pred_dict = self.predict_batch(input_tensors)
+                # shape: (batch, 2)
+                pred_sa = torch.argmax(
+                    pred_dict["logit_sa"].cpu(), dim=1).numpy()
+                for i, sa in enumerate(pred_sa):
+                    start, end = sa[0], sa[1]
+                    if start > 0:
+                        start = batch_metas['tok_to_orig'][i][
+                            sa[0] - batch_metas["offset"][i]]
+                    if end > 0:
+                        end = batch_metas['tok_to_orig'][i][
+                            sa[1] - batch_metas["offset"][i]]
+                    sas.append((start, end))
+                # shape: (batch, 4)
+                types.append(
+                    F.softmax(pred_dict["logit_type"], dim=1).cpu().numpy())
+                ids.append(np.asarray(batch_metas["example_id"]))
+                lstarts.append(np.asarray(batch_metas["starts_at"]))
+                lends.append(np.asarray(batch_metas["ends_at"]))
+        sas = np.asarray(sas)
+        types = np.concatenate(types)
+        df = pd.DataFrame({
+            "example_id": np.concatenate(ids),
+            "long_start": np.concatenate(lstarts),
+            "long_end": np.concatenate(lends),
+            "short_start_hat": sas[:, 0],
+            "short_end_hat": sas[:, 1],
+            "type_0_prob": types[:, 0],
+            "type_1_prob": types[:, 1],
+            "type_2_prob": types[:, 2],
+            "type_3_prob": types[:, 3],
+        })
+        print(df.dtypes)
+        return df
