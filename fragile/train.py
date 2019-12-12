@@ -19,6 +19,12 @@ from .loss import BasicQALoss
 from .models import BasicBert
 from .dataset import QADataset, collate_example_for_training
 
+try:
+    from apex import amp
+    APEX_AVAILABLE = True
+except ModuleNotFoundError:
+    APEX_AVAILABLE = False
+
 CACHE_DIR = Path("cache/")
 NO_DECAY = [
     'LayerNorm.weight', 'LayerNorm.bias'
@@ -82,15 +88,21 @@ class Trainer:
 
     def _setup(
         self, pattern: str, max_q_len: int, max_ex_len: int, batch_size: int,
-        lr: float = 3e-4, sample_negatives: float = 1.0
+        lr: float = 3e-4, sample_negatives: float = 1.0, use_amp: bool = False
     ):
+        assert use_amp is False or APEX_AVAILABLE is True
         tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
         train_ds, train_loader, valid_ds, valid_loader = get_data(
             tokenizer, pattern, max_q_len, max_ex_len,
             batch_size, sample_negatives
         )
+
         model = BasicBert(MODEL_NAME).cuda()
         optimizer = get_optimizer(model, lr)
+        if use_amp:
+            model, optimizer = amp.initialize(
+                model, optimizer, opt_level=args.amp
+            )
         return (
             train_ds, train_loader, valid_ds, valid_loader,
             model, optimizer
@@ -101,18 +113,19 @@ class Trainer:
         pattern: str = "cache/train/train_*.jl", max_q_len: int = 128,
         max_ex_len: int = 350, batch_size: int = 4,
         lr: float = 3e-4, sample_negatives: float = 1.0,
-        checkpoint_interval: int = 3000
+        checkpoint_interval: int = 3000, use_amp: bool = False
     ):
         (
             train_ds, train_loader, _, valid_loader,
             model, optimizer
         ) = self._setup(
-            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives
+            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives, use_amp
         )
         bot = BasicQABot.load_checkpoint(
             checkpoint_path, train_loader, valid_loader,
             model, optimizer
         )
+        assert bot.use_amp == use_amp
         checkpoints: Optional[CheckpointCallback] = None
         for callback in bot.callbacks:
             if isinstance(callback, CheckpointCallback):
@@ -135,13 +148,13 @@ class Trainer:
         self, pattern: str = "cache/train/train_*.jl", max_q_len: int = 128,
         max_ex_len: int = 350, batch_size: int = 4, n_steps: int = 20000,
         lr: float = 3e-4, grad_accu: int = 1, sample_negatives: float = 1.0,
-        log_freq: int = 200, checkpoint_interval: int = 3000
+        log_freq: int = 200, checkpoint_interval: int = 3000, use_amp: bool = False
     ):
         (
             train_ds, train_loader, _, valid_loader,
             model, optimizer
         ) = self._setup(
-            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives
+            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives, use_amp
         )
         checkpoints = CheckpointCallback(
             keep_n_checkpoints=1,
@@ -198,7 +211,8 @@ class Trainer:
             use_tensorboard=False,
             use_amp=False,
             gradient_accumulation_steps=grad_accu,
-            metrics=()
+            metrics=(),
+            use_amp=use_amp
         )
         bot.logger.info("train batch size: %d", train_loader.batch_size)
         bot.train(
