@@ -1,16 +1,23 @@
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class BasicQALoss(nn.Module):
-    def __init__(self, sa_weight: float, alpha: float = 0.02):
+    def __init__(
+        self, sa_weight: float, alpha: float = 0.02, log_freq: int = 500,
+        class_weights: Sequence[float] = (.75, 1., 2., 2.)
+    ):
         super().__init__()
         self.sa_weight = sa_weight
         self.alpha = alpha
         self.type_loss = 1.
         self.sa_loss = 1.
         self.steps = 0
+        self.log_freq = log_freq
+        self.class_weights = torch.tensor(class_weights).cuda()
 
     def forward(self, preds, targets):
         logit_sa = preds["logit_sa"]
@@ -18,7 +25,7 @@ class BasicQALoss(nn.Module):
         n_sa = (targets[:, 0] == 1).sum()
         type_loss = F.cross_entropy(
             logit_type, targets[:, 0],
-            weight=torch.tensor([.5, 1., 2., 2.]).cuda()
+            weight=self.class_weights
         )
         if logit_sa.requires_grad:
             self.type_loss = (
@@ -46,6 +53,6 @@ class BasicQALoss(nn.Module):
             ) / (1 + self.sa_weight)
         if logit_sa.requires_grad:
             self.steps += 1
-            if self.steps % 500 == 0:
+            if self.steps % self.log_freq == 0:
                 print(f"{self.type_loss:.4f} {self.sa_loss:.4f}")
         return result

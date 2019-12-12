@@ -19,7 +19,8 @@ def main(
     file_pattern: str = '/tmp/test/test_%d.jl',
     max_q_len: int = 128,
     max_ex_len: int = 350,
-    batch_size: int = 4
+    batch_size: int = 4,
+    no_answer_threshold: float = 0.5
 ):
     if run_preprocess is True:
         print("Prepropcessing..")
@@ -61,7 +62,7 @@ def main(
     df_top["example_id"] = df_top["example_id"].astype("str")
     results = []
     for _, row in df_top.iterrows():
-        if row["type_0_prob"] > 0.5:
+        if row["type_0_prob"] > no_answer_threshold:
             results.append((
                 f"{row['example_id']}_long", ""
             ))

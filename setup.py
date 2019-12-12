@@ -1,10 +1,8 @@
 from setuptools import setup, find_packages
 
-from oggdo.version import __version__
-
 setup(
     name="fragile",
-    version=__version__,
+    version='0.0.2',
     author="Ceshine Lee",
     author_email="ceshine@ceshine.net",
     description="",

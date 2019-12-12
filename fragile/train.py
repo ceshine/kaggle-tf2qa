@@ -1,8 +1,10 @@
 import glob
 from pathlib import Path
+from typing import Optional
 
 import fire
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import ShuffleSplit
 from transformers import BertTokenizer
@@ -22,6 +24,8 @@ NO_DECAY = [
     'LayerNorm.weight', 'LayerNorm.bias'
 ]
 MODEL_NAME = "bert-base-cased"
+
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 def count_parameters(parameters):
@@ -69,86 +73,142 @@ def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negat
     )
     valid_loader: DataLoader = DataLoader(
         valid_ds, collate_fn=collate_example_for_training,
-        batch_size=batch_size, num_workers=0
+        batch_size=batch_size, num_workers=1
     )
     return train_ds, train_loader, valid_ds, valid_loader
 
 
-def main(
-    pattern: str = "cache/train/train_*.jl", max_q_len: int = 128,
-    max_ex_len: int = 350, batch_size: int = 4, n_steps: int = 20000,
-    lr: float = 3e-4, grad_accu: int = 1, sample_negatives: float = 1.0
-):
-    tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
-    train_ds, train_loader, _, valid_loader = get_data(
-        tokenizer, pattern, max_q_len, max_ex_len,
-        batch_size, sample_negatives
-    )
+class Trainer:
 
-    model = BasicBert(MODEL_NAME).cuda()
-    optimizer = get_optimizer(model, lr)
-
-    checkpoints = CheckpointCallback(
-        keep_n_checkpoints=1,
-        checkpoint_dir=CACHE_DIR / "model_cache/",
-        monitor_metric="loss"
-    )
-    lr_durations = [
-        int(n_steps*0.2),
-        int(np.ceil(n_steps*0.8))
-    ]
-    break_points = [0] + list(np.cumsum(lr_durations))[:-1]
-    callbacks = [
-        MovingAverageStatsTrackerCallback(
-            avg_window=400,
-            log_interval=200
-        ),
-        LearningRateSchedulerCallback(
-            MultiStageScheduler(
-                [
-                    LinearLR(optimizer, 0.01, lr_durations[0]),
-                    LinearLR(optimizer, 0.001, lr_durations[1], upward=False)
-                    # CosineAnnealingLR(optimizer, lr_durations[1])
-                ],
-                start_at_epochs=break_points
-            )
-        ),
-        checkpoints,
-        TelegramCallback(
-            token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
-            chat_id="213781869", name="QABot",
-            report_evals=True
-        ),
-        StepwiseLinearPropertySchedulerCallback(
-            train_ds, "sample_negatives", 0.01, 0.3,
-            1000, int(n_steps * 0.9), log_freq=1000
+    def _setup(
+        self, pattern: str, max_q_len: int, max_ex_len: int, batch_size: int,
+        lr: float = 3e-4, sample_negatives: float = 1.0
+    ):
+        tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
+        train_ds, train_loader, valid_ds, valid_loader = get_data(
+            tokenizer, pattern, max_q_len, max_ex_len,
+            batch_size, sample_negatives
         )
-    ]
-    bot = BasicQABot(
-        model=model,
-        train_loader=train_loader,
-        valid_loader=valid_loader,
-        log_dir=CACHE_DIR / "logs/",
-        clip_grad=10.,
-        optimizer=optimizer,
-        echo=True,
-        criterion=BasicQALoss(0.5),
-        callbacks=callbacks,
-        pbar=True,
-        use_tensorboard=False,
-        use_amp=False,
-        gradient_accumulation_steps=grad_accu,
-        metrics=()
-    )
-    bot.logger.info("train batch size: %d", train_loader.batch_size)
-    bot.train(
-        total_steps=n_steps,
-        checkpoint_interval=3000
-    )
-    bot.load_model(checkpoints.best_performers[0][1])
-    checkpoints.remove_checkpoints(keep=0)
-    bot.model.save(CACHE_DIR / "final/")
+        model = BasicBert(MODEL_NAME).cuda()
+        optimizer = get_optimizer(model, lr)
+        return (
+            train_ds, train_loader, valid_ds, valid_loader,
+            model, optimizer
+        )
+
+    def resume(
+        self, checkpoint_path: str,
+        pattern: str = "cache/train/train_*.jl", max_q_len: int = 128,
+        max_ex_len: int = 350, batch_size: int = 4,
+        lr: float = 3e-4, sample_negatives: float = 1.0,
+        checkpoint_interval: int = 3000
+    ):
+        (
+            train_ds, train_loader, _, valid_loader,
+            model, optimizer
+        ) = self._setup(
+            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives
+        )
+        bot = BasicQABot.load_checkpoint(
+            checkpoint_path, train_loader, valid_loader,
+            model, optimizer
+        )
+        checkpoints: Optional[CheckpointCallback] = None
+        for callback in bot.callbacks:
+            if isinstance(callback, CheckpointCallback):
+                checkpoints = callback
+                break
+        for callback in bot.callbacks:
+            if isinstance(callback, StepwiseLinearPropertySchedulerCallback):
+                callback.target_obj = train_ds
+                break
+        if checkpoints:
+            # We can reset the checkpoints
+            checkpoints.reset(ignore_previous=True)
+        bot.train(checkpoint_interval=checkpoint_interval)
+        if checkpoints:
+            bot.load_model(checkpoints.best_performers[0][1])
+            checkpoints.remove_checkpoints(keep=0)
+        bot.model.save(CACHE_DIR / "final/")
+
+    def train(
+        self, pattern: str = "cache/train/train_*.jl", max_q_len: int = 128,
+        max_ex_len: int = 350, batch_size: int = 4, n_steps: int = 20000,
+        lr: float = 3e-4, grad_accu: int = 1, sample_negatives: float = 1.0,
+        log_freq: int = 200, checkpoint_interval: int = 3000
+    ):
+        (
+            train_ds, train_loader, _, valid_loader,
+            model, optimizer
+        ) = self._setup(
+            pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives
+        )
+        checkpoints = CheckpointCallback(
+            keep_n_checkpoints=1,
+            checkpoint_dir=CACHE_DIR / "model_cache/",
+            monitor_metric="loss"
+        )
+        lr_durations = [
+            int(n_steps*0.2),
+            int(np.ceil(n_steps*0.8))
+        ]
+        break_points = [0] + list(np.cumsum(lr_durations))[:-1]
+        callbacks = [
+            MovingAverageStatsTrackerCallback(
+                avg_window=log_freq * 2,
+                log_interval=log_freq
+            ),
+            LearningRateSchedulerCallback(
+                MultiStageScheduler(
+                    [
+                        LinearLR(optimizer, 0.01, lr_durations[0]),
+                        LinearLR(optimizer, 0.001,
+                                 lr_durations[1], upward=False)
+                        # CosineAnnealingLR(optimizer, lr_durations[1])
+                    ],
+                    start_at_epochs=break_points
+                )
+            ),
+            checkpoints,
+            TelegramCallback(
+                token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
+                chat_id="213781869", name="QABot",
+                report_evals=True
+            ),
+            StepwiseLinearPropertySchedulerCallback(
+                train_ds, "sample_negatives", 0.02, 0.5,
+                5000, int(n_steps * 0.95), log_freq=log_freq*4
+            )
+        ]
+        bot = BasicQABot(
+            model=model,
+            train_loader=train_loader,
+            valid_loader=valid_loader,
+            log_dir=CACHE_DIR / "logs/",
+            clip_grad=10.,
+            optimizer=optimizer,
+            echo=True,
+            criterion=BasicQALoss(
+                0.5,
+                log_freq=log_freq*4,
+                alpha=0.01
+            ),
+            callbacks=callbacks,
+            pbar=True,
+            use_tensorboard=False,
+            use_amp=False,
+            gradient_accumulation_steps=grad_accu,
+            metrics=()
+        )
+        bot.logger.info("train batch size: %d", train_loader.batch_size)
+        bot.train(
+            total_steps=n_steps,
+            checkpoint_interval=checkpoint_interval
+        )
+        bot.load_model(checkpoints.best_performers[0][1])
+        checkpoints.remove_checkpoints(keep=0)
+        bot.model.save(CACHE_DIR / "final/")
 
 
 if __name__ == '__main__':
-    fire.Fire(main)
+    fire.Fire(Trainer)

@@ -212,7 +212,7 @@ def preprocess(
                 if cands is None:
                     continue
                 buffer.append((eid, qtokens, cands))
-            print(len(buffer))
+            # print(len(buffer))
             # print(df.columns)
             # raise ValueError()
             # for i, row in df.iterrows():

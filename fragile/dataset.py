@@ -50,10 +50,13 @@ class QADataset(IterableDataset):
         return self.generator(seed)
 
     def generator(self, seed):
+        cnt, file_cnt = 0, 0
         while True:
-            cnt = 0
             for chunk_path in self.file_paths:
-                print(f"loading {chunk_path}...")
+                file_cnt += 1
+                print(
+                    f"loading {chunk_path}... (loaded {file_cnt} files) is_test: {self.is_test}"
+                )
                 chunk = joblib.load(chunk_path)
                 if self.is_test is False:
                     # shuffle only in training
