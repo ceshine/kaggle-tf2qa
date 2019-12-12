@@ -49,7 +49,7 @@ class BasicBert(nn.Module):
         # make irrelevant positions nearly impossible
         logit_sa[
             features['sa_mask'][:, :, None].expand(-1, -1, 2)
-        ] = -1e5
+        ] = -1e4
         return {
             "logit_sa": logit_sa,
             "logit_type": logit_type
