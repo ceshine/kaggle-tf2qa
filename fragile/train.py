@@ -101,7 +101,7 @@ class Trainer:
         optimizer = get_optimizer(model, lr)
         if use_amp:
             model, optimizer = amp.initialize(
-                model, optimizer, opt_level=args.amp
+                model, optimizer, "O1"
             )
         return (
             train_ds, train_loader, valid_ds, valid_loader,
