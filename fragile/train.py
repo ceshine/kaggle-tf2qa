@@ -76,7 +76,7 @@ def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negat
     valid_ds = QADataset(
         test_paths, tokenizer, seed=42, is_test=True,
         max_question_length=max_q_len, max_example_length=max_ex_len,
-        sample_negatives=sample_negatives
+        sample_negatives=0.25
     )
     valid_loader: DataLoader = DataLoader(
         valid_ds, collate_fn=collate_example_for_training,
