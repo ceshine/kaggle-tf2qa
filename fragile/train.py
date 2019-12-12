@@ -209,7 +209,6 @@ class Trainer:
             callbacks=callbacks,
             pbar=True,
             use_tensorboard=False,
-            use_amp=False,
             gradient_accumulation_steps=grad_accu,
             metrics=(),
             use_amp=use_amp
