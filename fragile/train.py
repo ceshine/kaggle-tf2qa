@@ -6,6 +6,7 @@ import fire
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.model_selection import ShuffleSplit
 from transformers import BertTokenizer
 from pytorch_helper_bot import (
@@ -131,10 +132,10 @@ class Trainer:
             if isinstance(callback, CheckpointCallback):
                 checkpoints = callback
                 break
-        for callback in bot.callbacks:
-            if isinstance(callback, StepwiseLinearPropertySchedulerCallback):
-                callback.target_obj = train_ds
-                break
+        # for callback in bot.callbacks:
+        #     if isinstance(callback, StepwiseLinearPropertySchedulerCallback):
+        #         callback.target_obj = train_ds
+        #         break
         if checkpoints:
             # We can reset the checkpoints
             checkpoints.reset(ignore_previous=True)
@@ -187,10 +188,6 @@ class Trainer:
                 token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
                 chat_id="213781869", name="QABot",
                 report_evals=True
-            ),
-            StepwiseLinearPropertySchedulerCallback(
-                train_ds, "sample_negatives", 0.02, 0.5,
-                5000, int(n_steps * 0.95), log_freq=log_freq*4
             )
         ]
         bot = BasicQABot(
