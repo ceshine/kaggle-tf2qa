@@ -127,8 +127,8 @@ class BasicQABot(BaseBot):
                 weights.append(y_local.size(self.batch_dim))
                 # print((output["logit_sa"][0, y_local[0, 1], 0]))
                 # print((output["logit_sa"][0, y_local[0, 2], 1]))
-                assert(output["logit_sa"][0, y_local[0, 1], 0] > -1e19)
-                assert(output["logit_sa"][0, y_local[0, 2], 1] > -1e19)
+                assert(output["logit_sa"][0, y_local[0, 1], 0] > -1e9)
+                assert(output["logit_sa"][0, y_local[0, 2], 1] > -1e9)
                 # Save batch labels and predictions
                 # shape (batch, 2)
                 preds_sa.append(
