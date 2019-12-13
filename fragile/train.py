@@ -176,9 +176,9 @@ class Trainer:
                 MultiStageScheduler(
                     [
                         LinearLR(optimizer, 0.01, lr_durations[0]),
-                        LinearLR(optimizer, 0.001,
-                                 lr_durations[1], upward=False)
-                        # CosineAnnealingLR(optimizer, lr_durations[1])
+                        # LinearLR(optimizer, 0.001,
+                        #          lr_durations[1], upward=False)
+                        CosineAnnealingLR(optimizer, lr_durations[1])
                     ],
                     start_at_epochs=break_points
                 )
