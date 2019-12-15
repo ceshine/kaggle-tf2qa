@@ -163,8 +163,8 @@ class Trainer:
             monitor_metric="loss"
         )
         lr_durations = [
-            int(n_steps*0.2),
-            int(np.ceil(n_steps*0.8))
+            int(n_steps*0.1),
+            int(np.ceil(n_steps*0.9))
         ]
         break_points = [0] + list(np.cumsum(lr_durations))[:-1]
         callbacks = [
