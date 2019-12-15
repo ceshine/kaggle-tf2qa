@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_auc_score
 from pytorch_helper_bot.bot import BaseBot, batch_to_device
 
 
@@ -98,6 +98,16 @@ class AnswerTypeAccuracy:
         return accuracy * -1, f"{accuracy * 100:.2f}%"
 
 
+class AnswerTypeAUC:
+    name = "type_AUC"
+
+    def __call__(self, truth: torch.Tensor, pred: Dict[str, torch.Tensor]) -> Tuple[float, str]:
+        auc = roc_auc_score(
+            (truth[:, 0] == 0).numpy(), pred["type0_prob"].numpy()
+        )
+        return auc * -1, f"{auc * 100:.2f}%"
+
+
 class BasicQABot(BaseBot):
     def __post_init__(self):
         super().__post_init__()
@@ -105,7 +115,7 @@ class BasicQABot(BaseBot):
         self.metrics = (
             AnswerTypeAccuracy(), ShortAnswerAccuracy(),
             ShortAnswerStrictAccuracy(), AnswerTypeOneRecall(),
-            AnswerTypeOnePrecision()
+            AnswerTypeOnePrecision(), AnswerTypeAUC()
         )
 
     def extract_prediction(self, x):
@@ -114,7 +124,7 @@ class BasicQABot(BaseBot):
     def eval(self, loader):
         """Warning: Only support datasets whose predictions and labels together fit in memory."""
         self.model.eval()
-        preds_sa, preds_type, ys = [], [], []
+        preds_sa, preds_type, preds_type0_prob, ys = [], [], [], []
         losses, weights = [], []
         self.logger.debug("Evaluating...")
         with torch.set_grad_enabled(False):
@@ -140,15 +150,26 @@ class BasicQABot(BaseBot):
                     torch.argmax(
                         output["logit_type"], dim=1
                     ).cpu())
+                # shape (batch,)
+                preds_type0_prob.append(
+                    F.softmax(output["logit_type"], dim=1)[:, 0].cpu()
+                )
                 ys.append(y_local.cpu())
         loss = np.average(losses, weights=weights)
         metrics = {"loss": (loss, self.loss_format % loss)}
-        global_ys, global_preds_sa, global_preds_type = (
-            torch.cat(ys), torch.cat(preds_sa), torch.cat(preds_type)
+        global_ys, global_preds_sa, global_preds_type, global_type0_prob = (
+            torch.cat(ys), torch.cat(preds_sa), torch.cat(preds_type),
+            torch.cat(preds_type0_prob)
         )
         for metric in self.metrics:
             metric_loss, metric_string = metric(
-                global_ys, {"sa": global_preds_sa, "type": global_preds_type})
+                global_ys,
+                {
+                    "sa": global_preds_sa,
+                    "type": global_preds_type,
+                    "type0_prob": global_type0_prob
+                }
+            )
             metrics[metric.name] = (metric_loss, metric_string)
         return metrics
 
