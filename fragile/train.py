@@ -61,7 +61,7 @@ def get_optimizer(model, lr):
 
 def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negatives):
     file_paths = np.asarray([x for x in glob.glob(pattern)])
-    ss = ShuffleSplit(n_splits=1, test_size=1)
+    ss = ShuffleSplit(n_splits=1, test_size=2)
     train_index, valid_index = next(ss.split(file_paths))
     train_paths, test_paths = file_paths[train_index], file_paths[valid_index]
 
@@ -71,7 +71,7 @@ def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negat
     )
     train_loader: DataLoader = DataLoader(
         train_ds, collate_fn=collate_example_for_training,
-        batch_size=batch_size, num_workers=2
+        batch_size=batch_size, num_workers=4
     )
     valid_ds = QADataset(
         test_paths, tokenizer, seed=42, is_test=True,
@@ -117,7 +117,7 @@ class Trainer:
         checkpoint_interval: int = 3000, use_amp: bool = False
     ):
         (
-            train_ds, train_loader, _, valid_loader,
+            _, train_loader, _, valid_loader,
             model, optimizer
         ) = self._setup(
             pattern, max_q_len, max_ex_len, batch_size, lr, sample_negatives, use_amp
@@ -201,7 +201,7 @@ class Trainer:
             criterion=BasicQALoss(
                 0.5,
                 log_freq=log_freq*4,
-                alpha=0.01
+                alpha=0.005
             ),
             callbacks=callbacks,
             pbar=True,
