@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.model_selection import ShuffleSplit
-from transformers import BertTokenizer
+from transformers import AlbertTokenizer
 from pytorch_helper_bot import (
     MovingAverageStatsTrackerCallback, LearningRateSchedulerCallback,
     MultiStageScheduler, LinearLR, CheckpointCallback,
@@ -17,7 +17,7 @@ from pytorch_helper_bot import (
 
 from .bot import BasicQABot
 from .loss import BasicQALoss
-from .models import BasicBert
+from .models import BasicAlbert
 from .dataset import QADataset, collate_example_for_training
 
 try:
@@ -30,7 +30,7 @@ CACHE_DIR = Path("cache/")
 NO_DECAY = [
     'LayerNorm.weight', 'LayerNorm.bias'
 ]
-MODEL_NAME = "bert-base-cased"
+MODEL_NAME = "albert-large-v2"
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -71,7 +71,7 @@ def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negat
     )
     train_loader: DataLoader = DataLoader(
         train_ds, collate_fn=collate_example_for_training,
-        batch_size=batch_size, num_workers=4
+        batch_size=batch_size, num_workers=2
     )
     valid_ds = QADataset(
         test_paths, tokenizer, seed=42, is_test=True,
@@ -92,13 +92,13 @@ class Trainer:
         lr: float = 3e-4, sample_negatives: float = 1.0, use_amp: bool = False
     ):
         assert use_amp is False or APEX_AVAILABLE is True
-        tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
+        tokenizer = AlbertTokenizer.from_pretrained(MODEL_NAME)
         train_ds, train_loader, valid_ds, valid_loader = get_data(
             tokenizer, pattern, max_q_len, max_ex_len,
             batch_size, sample_negatives
         )
 
-        model = BasicBert(MODEL_NAME).cuda()
+        model = BasicAlbert(MODEL_NAME).cuda()
         optimizer = get_optimizer(model, lr)
         if use_amp:
             model, optimizer = amp.initialize(
@@ -176,9 +176,9 @@ class Trainer:
                 MultiStageScheduler(
                     [
                         LinearLR(optimizer, 0.01, lr_durations[0]),
-                        # LinearLR(optimizer, 0.001,
-                        #          lr_durations[1], upward=False)
-                        CosineAnnealingLR(optimizer, lr_durations[1])
+                        LinearLR(optimizer, 0.001,
+                                 lr_durations[1], upward=False)
+                        # CosineAnnealingLR(optimizer, lr_durations[1])
                     ],
                     start_at_epochs=break_points
                 )

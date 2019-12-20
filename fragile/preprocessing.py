@@ -1,6 +1,8 @@
+import math
 import json
 import itertools
 from pathlib import Path
+from typing import Tuple, List
 
 import fire
 import joblib
@@ -9,11 +11,16 @@ import pandas as pd
 import numpy as np
 from pandas.io.json._json import JsonReader
 from tqdm import tqdm
-from transformers import BertTokenizer
+from transformers import AlbertTokenizer
 
 from .data_structures import RawCandidate, TokenizedCandidate
 
 DEBUG = 0
+ANSWER_TYPES = {
+    "NONE": 1,
+    "NO": 2,
+    "YES": 3
+}
 
 
 class JsonChunkReader(JsonReader):
@@ -110,8 +117,9 @@ def tokenize_candidate(candidate, tokenizer):
                 start, end, orig_to_tok[start], orig_to_tok[end],
                 tok_to_orig[orig_to_tok[start]], tok_to_orig[orig_to_tok[end]])
         assert tok_to_orig[orig_to_tok[start]] == start
-        assert tok_to_orig[orig_to_tok[end]
-                           ] == end, f"{start}, {end}, {tok_to_orig[orig_to_tok[start]]}, {tok_to_orig[orig_to_tok[end]]}"
+        assert tok_to_orig[
+            orig_to_tok[end]
+        ] == end, f"{start}, {end}, {tok_to_orig[orig_to_tok[start]]}, {tok_to_orig[orig_to_tok[end]]}"
     return TokenizedCandidate(
         original_index=candidate.original_index,
         filtered_index=candidate.filtered_index,
@@ -146,82 +154,65 @@ def parse_long_candidates(row, has_annotations, tokenizer):
     return [tokenize_candidate(x, tokenizer) for x in candidates.values()]
 
 
-ANSWER_TYPES = {
-    "NONE": 1,
-    "NO": 2,
-    "YES": 3
-}
+def parse_slice(df_slice, has_annotations, tokenizer) -> Tuple[List, int]:
+    buffer = []
+    candidates = [
+        parse_long_candidates(
+            row, has_annotations=has_annotations, tokenizer=tokenizer)
+        for _, row in df_slice.iterrows()
+    ]
+    na_count = np.sum([x is None for x in candidates])
+    question_tokens = [
+        tokenizer.encode(row["question_text"], add_special_tokens=False)
+        for _, row in df_slice.iterrows()]
+    ids = df_slice.example_id.values
+    for eid, qtokens, cands in zip(ids, question_tokens, candidates):
+        if cands is None:
+            continue
+        buffer.append((eid, qtokens, cands))
+    return buffer, na_count
 
 
 def preprocess(
     filepath: str = 'data/simplified-nq-train.jsonl',
     output_pattern: str = 'cache/train/train_%d.jl',
     has_annotations: bool = False,
-    chunk_size=500,
-    write_per_chunk=2,
+    chunk_size=1200,
+    write_per_chunk=1,
     skip_writes=0,
     stop_at=-1,
-    tokenizer_model: str = "bert-base-cased"
+    tokenizer_model: str = "albert-large-v2",
+    workers: int = 4
 ):
-    tokenizer = BertTokenizer.from_pretrained(tokenizer_model)
+    assert chunk_size % workers == 0
+    tokenizer = AlbertTokenizer.from_pretrained(tokenizer_model)
     Path(output_pattern).parent.mkdir(exist_ok=True, parents=True)
     reader = JsonChunkReader.chunk_reader(
         filepath, chunksize=chunk_size,
     )
-    buffer, n_written = [], skip_writes
-    na_count = 1
-    with Parallel(n_jobs=2, prefer="threads") as parallel:
+    buffer: List[Tuple] = []
+    n_written = skip_writes
+    na_count = 0
+    with Parallel(n_jobs=workers, prefer="processes") as parallel:
         for i, df in tqdm(enumerate(reader)):
             if i < skip_writes * write_per_chunk:
                 continue
             if has_annotations:
                 df.drop(["document_url"], axis=1, inplace=True)
-            # candidates = np.asarray(parallel(
-            #     delayed(parse_long_candidates)(
-            #         row, has_annotations=has_annotations
-            #     )
-            #     for _, row in df.iterrows()
-            # ))
-            candidates = [
-                parse_long_candidates(
-                    row, has_annotations=has_annotations, tokenizer=tokenizer)
-                for _, row in df.iterrows()
-            ]
-            question_tokens = parallel(
-                delayed(tokenizer.encode)(
-                    row["question_text"], add_special_tokens=False
-                )
-                for _, row in df.iterrows()
+            slice_size = math.ceil(df.shape[0] / workers)
+            results = parallel(
+                delayed(parse_slice)(
+                    df.iloc[slice_size*i:slice_size*(i+1)],
+                    has_annotations=has_annotations,
+                    tokenizer=tokenizer
+                ) for i in range(workers)
             )
-            # question_tokens = [
-            #     TOKENIZER.encode(row["question_text"], add_special_tokens=False)
-            #     for _, row in df.iterrows()]
-            ids = df.example_id.values
-            # print(ids.dtype)
-            # df.drop(
-            #     ["document_text", "long_answer_candidates", "question_text"],
-            #     axis=1, inplace=True)
-            # if has_annotations:
-            #     df.drop(["annotations"], axis=1, inplace=True)
-            na_count += np.sum([x is None for x in candidates])
-            # not_none = ~np.equal(candidates, None)
-            # buffer.append(np.stack([
-            #     ids[not_none], question_tokens[not_none], candidates[not_none]
-            # ], axis=1))
-            for eid, qtokens, cands in zip(ids, question_tokens, candidates):
-                if cands is None:
-                    continue
-                buffer.append((eid, qtokens, cands))
-            # print(len(buffer))
-            # print(df.columns)
-            # raise ValueError()
-            # for i, row in df.iterrows():
-            #     print(i, [
-            #         (x.short_answers, x.answer_type)
-            #         for x in row["candidates"].values() if x.answer_type > 0])
+            for row in results:
+                buffer += row[0]
+                na_count += row[1]
             if (i + 1) % write_per_chunk == 0:
                 print(
-                    f"Writing... NA ratio: {na_count/chunk_size/write_per_chunk}")
+                    f"Writing... NA ratio: {na_count/chunk_size/write_per_chunk} rows: {len(buffer)}")
                 joblib.dump(buffer, output_pattern % n_written)
                 n_written += 1
                 buffer = []

@@ -4,13 +4,13 @@ import fire
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
-from transformers import BertTokenizer
+from transformers import AlbertTokenizer
 
 from .dataset import QADataset, collate_example_for_inference
 from .preprocessing import preprocess
 from .train import MODEL_NAME, CACHE_DIR
 from .bot import BasicQABot
-from .models import BasicBert
+from .models import BasicAlbert
 
 
 def main(
@@ -29,7 +29,7 @@ def main(
             output_pattern=file_pattern, tokenizer_model=model_path,
             has_annotations=False, chunk_size=500, write_per_chunk=2
         )
-    tokenizer = BertTokenizer.from_pretrained(model_path)
+    tokenizer = AlbertTokenizer.from_pretrained(model_path)
     file_paths = np.asarray(
         [x for x in glob.glob(file_pattern.replace("%d", "*"))])
     test_ds = QADataset(
@@ -41,7 +41,7 @@ def main(
         test_ds, collate_fn=collate_example_for_inference,
         batch_size=batch_size, num_workers=0
     )
-    model = BasicBert.load(model_path).cuda()
+    model = BasicAlbert.load(model_path).cuda()
     bot = BasicQABot(
         model=model,
         train_loader=None,
@@ -52,7 +52,7 @@ def main(
         echo=True,
         criterion=None,
         callbacks=[],
-        pbar=True,
+        pbar=False,
         use_tensorboard=False,
         use_amp=False
     )

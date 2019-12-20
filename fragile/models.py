@@ -3,7 +3,7 @@ from typing import Dict, Union
 
 import torch
 from torch import nn
-from transformers import BertModel, BertConfig
+from transformers import BertModel, BertConfig, AlbertModel, AlbertConfig
 
 
 class BasicBert(nn.Module):
@@ -70,11 +70,36 @@ class BasicBert(nn.Module):
             "sa_cls": self.short_answer_classifier.state_dict()
         }, output_path / "classifiers.pth")
 
-    @staticmethod
-    def load(input_path: Union[str, Path]):
+    @classmethod
+    def load(cls, input_path: Union[str, Path]):
         input_path = Path(input_path)
-        model = BasicBert(model_name_or_path=str(input_path))
+        model = cls(model_name_or_path=str(input_path))
         states = torch.load(input_path / "classifiers.pth")
         model.answer_type_classifier.load_state_dict(states["type_cls"])
         model.short_answer_classifier.load_state_dict(states["sa_cls"])
         return model
+
+
+class BasicAlbert(BasicBert):
+    def __init__(self, model_name_or_path: str):
+        nn.Module.__init__(self)
+        config = AlbertConfig.from_pretrained(model_name_or_path)
+        config.output_hidden_states = False
+        self.bert = AlbertModel.from_pretrained(
+            model_name_or_path, config=config)
+        self.answer_type_classifier = nn.Sequential(
+            nn.Linear(
+                self.get_hidden_dimension(),
+                self.get_hidden_dimension() // 2),
+            nn.ReLU(),
+            nn.LayerNorm(self.get_hidden_dimension() // 2),
+            nn.Linear(self.get_hidden_dimension() // 2, 4)
+        )
+        self.short_answer_classifier = nn.Sequential(
+            nn.Linear(
+                self.get_hidden_dimension(),
+                self.get_hidden_dimension() // 2),
+            nn.ReLU(),
+            nn.LayerNorm(self.get_hidden_dimension() // 2),
+            nn.Linear(self.get_hidden_dimension() // 2, 2)
+        )
