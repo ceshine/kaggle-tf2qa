@@ -8,7 +8,7 @@ import torch.nn.functional as F
 class BasicQALoss(nn.Module):
     def __init__(
         self, sa_weight: float, alpha: float = 0.02, log_freq: int = 500,
-        class_weights: Sequence[float] = (.75, 1., 2., 2.)
+        class_weights: Sequence[float] = (1., 1., 2., 2.)
     ):
         super().__init__()
         self.sa_weight = sa_weight

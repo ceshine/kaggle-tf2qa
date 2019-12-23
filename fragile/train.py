@@ -61,7 +61,7 @@ def get_optimizer(model, lr):
 
 def get_data(tokenizer, pattern, max_q_len, max_ex_len, batch_size, sample_negatives):
     file_paths = np.asarray([x for x in glob.glob(pattern)])
-    ss = ShuffleSplit(n_splits=1, test_size=2)
+    ss = ShuffleSplit(n_splits=1, test_size=1)
     train_index, valid_index = next(ss.split(file_paths))
     train_paths, test_paths = file_paths[train_index], file_paths[valid_index]
 
