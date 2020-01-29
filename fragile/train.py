@@ -183,12 +183,12 @@ class Trainer:
                     start_at_epochs=break_points
                 )
             ),
-            checkpoints,
-            TelegramCallback(
-                token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
-                chat_id="213781869", name="QABot",
-                report_evals=True
-            )
+            checkpoints
+            # TelegramCallback(
+            #     token="559760930:AAGOgPA0OlqlFB7DrX0lyRc4Di3xeixdNO8",
+            #     chat_id="213781869", name="QABot",
+            #     report_evals=True
+            # )
         ]
         bot = BasicQABot(
             model=model,
